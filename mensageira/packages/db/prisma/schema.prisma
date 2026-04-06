@@ -1,0 +1,218 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ──────────────────────────────────────────────
+// Multi-tenant root
+// ──────────────────────────────────────────────
+
+model Account {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(255)
+  slug      String   @unique @db.VarChar(100)
+  plan      String   @default("free") @db.VarChar(20)
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users             User[]
+  leads             Lead[]
+  conversations     Conversation[]
+  messages          Message[]
+  sequences         Sequence[]
+  leadSequences     LeadSequence[]
+  leadEvents        LeadEvent[]
+  whatsappSessions  WhatsAppSession[]
+
+  @@map("accounts")
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  accountId    String   @map("account_id") @db.Uuid
+  name         String   @db.VarChar(255)
+  email        String   @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         String   @default("seller") @db.VarChar(20)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  account       Account      @relation(fields: [accountId], references: [id])
+  assignedLeads Lead[]       @relation("AssignedLeads")
+  refreshTokens RefreshToken[]
+
+  @@unique([accountId, email])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique @db.VarChar(500)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Lead {
+  id              String    @id @default(uuid()) @db.Uuid
+  accountId       String    @map("account_id") @db.Uuid
+  assignedTo      String?   @map("assigned_to") @db.Uuid
+  name            String    @db.VarChar(255)
+  phone           String    @db.VarChar(20)
+  company         String?   @db.VarChar(255)
+  source          String    @default("manual") @db.VarChar(20)
+  sourceDetail    String?   @map("source_detail") @db.VarChar(255)
+  status          String    @default("new") @db.VarChar(20)
+  score           Int       @default(0)
+  temperature     String    @default("cold") @db.VarChar(10)
+  nurtureCount    Int       @default(0) @map("nurture_count")
+  lastContactedAt DateTime? @map("last_contacted_at")
+  tags            Json      @default("[]")
+  metadata        Json      @default("{}")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  account       Account        @relation(fields: [accountId], references: [id])
+  assignedUser  User?          @relation("AssignedLeads", fields: [assignedTo], references: [id])
+  conversations Conversation[]
+  leadSequences LeadSequence[]
+  leadEvents    LeadEvent[]
+
+  @@unique([accountId, phone])
+  @@index([accountId, status, score(sort: Desc)], map: "idx_leads_pipeline")
+  @@index([accountId, temperature, lastContactedAt(sort: Desc)], map: "idx_leads_hot")
+  @@map("leads")
+}
+
+model Conversation {
+  id            String    @id @default(uuid()) @db.Uuid
+  accountId     String    @map("account_id") @db.Uuid
+  leadId        String    @map("lead_id") @db.Uuid
+  channel       String    @default("whatsapp") @db.VarChar(20)
+  status        String    @default("active") @db.VarChar(20)
+  aiEnabled     Boolean   @default(true) @map("ai_enabled")
+  startedAt     DateTime  @default(now()) @map("started_at")
+  lastMessageAt DateTime? @map("last_message_at")
+
+  account  Account   @relation(fields: [accountId], references: [id])
+  lead     Lead      @relation(fields: [leadId], references: [id])
+  messages Message[]
+
+  @@unique([accountId, leadId, channel])
+  @@index([leadId], map: "idx_conv_lead")
+  @@index([lastMessageAt(sort: Desc)], map: "idx_conv_last_msg")
+  @@map("conversations")
+}
+
+model Message {
+  id             String    @id @default(uuid()) @db.Uuid
+  accountId      String    @map("account_id") @db.Uuid
+  conversationId String    @map("conversation_id") @db.Uuid
+  externalId     String?   @map("external_id") @db.VarChar(255)
+  correlationId  String?   @map("correlation_id") @db.Uuid
+  direction      String    @db.VarChar(10)
+  sender         String    @db.VarChar(10)
+  content        String    @db.Text
+  contentType    String    @default("text") @map("content_type") @db.VarChar(20)
+  status         String    @default("queued") @db.VarChar(20)
+  queuedAt       DateTime  @default(now()) @map("queued_at")
+  sentAt         DateTime? @map("sent_at")
+  deliveredAt    DateTime? @map("delivered_at")
+  readAt         DateTime? @map("read_at")
+  failedAt       DateTime? @map("failed_at")
+  error          String?   @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  account      Account      @relation(fields: [accountId], references: [id])
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId, createdAt(sort: Desc)], map: "idx_messages_conversation")
+  @@index([externalId], map: "idx_messages_external")
+  @@map("messages")
+}
+
+model Sequence {
+  id          String    @id @default(uuid()) @db.Uuid
+  accountId   String    @map("account_id") @db.Uuid
+  name        String    @db.VarChar(255)
+  type        String    @db.VarChar(20)
+  version     Int       @default(1)
+  steps       Json
+  isActive    Boolean   @default(true) @map("is_active")
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  account       Account        @relation(fields: [accountId], references: [id])
+  leadSequences LeadSequence[]
+
+  @@map("sequences")
+}
+
+model LeadSequence {
+  id              String    @id @default(uuid()) @db.Uuid
+  accountId       String    @map("account_id") @db.Uuid
+  leadId          String    @map("lead_id") @db.Uuid
+  sequenceId      String    @map("sequence_id") @db.Uuid
+  sequenceVersion Int       @map("sequence_version")
+  currentStep     Int       @default(0) @map("current_step")
+  status          String    @default("active") @db.VarChar(20)
+  nextSendAt      DateTime? @map("next_send_at")
+  retryCount      Int       @default(0) @map("retry_count")
+  lastError       String?   @map("last_error") @db.Text
+  lockedAt        DateTime? @map("locked_at")
+  lockedBy        String?   @map("locked_by") @db.VarChar(255)
+  startedAt       DateTime  @default(now()) @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+
+  account  Account  @relation(fields: [accountId], references: [id])
+  lead     Lead     @relation(fields: [leadId], references: [id])
+  sequence Sequence @relation(fields: [sequenceId], references: [id])
+
+  @@index([nextSendAt(sort: Asc)], map: "idx_leadseq_pending_send")
+  @@index([leadId], map: "idx_leadseq_lead")
+  @@index([status], map: "idx_leadseq_status")
+  @@map("lead_sequences")
+}
+
+model LeadEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String   @map("account_id") @db.Uuid
+  leadId    String   @map("lead_id") @db.Uuid
+  type      String   @db.VarChar(50)
+  actor     String   @db.VarChar(10)
+  actorId   String?  @map("actor_id") @db.Uuid
+  data      Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  account Account @relation(fields: [accountId], references: [id])
+  lead    Lead    @relation(fields: [leadId], references: [id])
+
+  @@index([leadId, createdAt(sort: Desc)], map: "idx_events_lead_timeline")
+  @@map("lead_events")
+}
+
+model WhatsAppSession {
+  id              String    @id @default(uuid()) @db.Uuid
+  accountId       String    @map("account_id") @db.Uuid
+  phone           String    @db.VarChar(20)
+  status          String    @default("disconnected") @db.VarChar(20)
+  sessionData     Json      @default("{}") @map("session_data")
+  lastConnectedAt DateTime? @map("last_connected_at")
+
+  account Account @relation(fields: [accountId], references: [id])
+
+  @@unique([accountId, phone])
+  @@map("whatsapp_sessions")
+}
