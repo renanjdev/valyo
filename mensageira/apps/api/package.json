@@ -11,16 +11,17 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@mensageira/shared": "*",
-    "@mensageira/contracts": "*",
-    "@mensageira/db": "*",
     "@fastify/cors": "^10.0.0",
     "@fastify/jwt": "^9.0.0",
+    "@mensageira/contracts": "*",
+    "@mensageira/db": "*",
+    "@mensageira/shared": "*",
     "bcrypt": "^5.1.0",
     "bullmq": "^5.30.0",
     "fastify": "^5.2.0",
     "ioredis": "^5.4.0",
     "pino": "^9.6.0",
+    "socket.io": "^4.8.3",
     "zod": "^3.24.0"
   },
   "devDependencies": {
