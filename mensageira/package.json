@@ -1,0 +1,25 @@
+{
+  "name": "mensageira",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "db:migrate": "turbo db:migrate --filter=@mensageira/db",
+    "db:seed": "turbo db:seed --filter=@mensageira/db",
+    "db:studio": "turbo db:studio --filter=@mensageira/db"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  },
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
