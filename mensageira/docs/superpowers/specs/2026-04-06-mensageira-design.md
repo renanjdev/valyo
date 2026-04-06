@@ -92,7 +92,7 @@ NEW → PROSPECTING → WAITING_RESPONSE → ENGAGED → QUALIFIED → WON
 - **→ ENGAGED:** Lead respondeu qualquer mensagem (mesmo "quem é você?")
 - **→ QUALIFIED:** IA detecta interesse real — pediu demo, descreveu dor, mencionou volume, perguntou contrato
 - **→ UNRESPONSIVE:** Sequência esgotada (3 sem leitura, 5 com leitura) sem resposta
-- **→ NURTURE:** Lead unresponsive movido para ciclo longo para nova tentativa
+- **→ NURTURE:** Lead unresponsive movido para ciclo longo para nova tentativa. Máximo 2 ciclos de nurture — após o segundo ciclo sem resposta, auto-marca como LOST
 
 ---
 
@@ -221,6 +221,7 @@ FK  assigned_to     → users.id NULLABLE
     status          ENUM (new, prospecting, waiting, engaged, qualified, unresponsive, nurture, won, lost)
     score           INTEGER DEFAULT 0
     temperature     ENUM (cold, warm, hot) DEFAULT 'cold'
+    nurture_count   INTEGER DEFAULT 0  — quantas vezes passou por NURTURE (max 2)
     last_contacted_at TIMESTAMP NULLABLE
     tags            JSONB DEFAULT '[]'
     metadata        JSONB DEFAULT '{}'  — região, volume_projetos, modelo_negócio
