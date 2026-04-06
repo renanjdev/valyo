@@ -1,0 +1,9 @@
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Dev overrides: expose ports on host for local dev tools, verbose logging
+services:
+  postgres:
+    environment:
+      POSTGRES_LOG_STATEMENT: "all"
+
+  redis:
+    command: redis-server --appendonly yes --loglevel verbose
