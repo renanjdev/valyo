@@ -11,6 +11,7 @@ import { conversationsRoutes } from './modules/conversations/conversations.route
 import { usersRoutes } from './modules/users/users.routes.js';
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes.js';
 import { whatsappRoutes } from './modules/whatsapp/whatsapp.routes.js';
+import { sequencesRoutes } from './modules/sequences/sequences.routes.js';
 
 export async function buildApp() {
   const app = Fastify({ logger });
@@ -31,6 +32,7 @@ export async function buildApp() {
   await app.register(usersRoutes, { prefix: '/api/users' });
   await app.register(dashboardRoutes, { prefix: '/api/dashboard' });
   await app.register(whatsappRoutes, { prefix: '/api/whatsapp' });
+  await app.register(sequencesRoutes, { prefix: '/api/sequences' });
 
   return app;
 }
