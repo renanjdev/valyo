@@ -30,6 +30,80 @@ services:
       retries: 5
     restart: unless-stopped
 
+  api:
+    build: ./apps/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://mensageira:mensageira@postgres:5432/mensageira
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: change-me-in-production-min-16
+      JWT_REFRESH_SECRET: change-me-too-production-16
+      API_PORT: "3000"
+      API_HOST: "0.0.0.0"
+      NODE_ENV: production
+    restart: unless-stopped
+
+  whatsapp:
+    build: ./apps/whatsapp
+    volumes:
+      - wa_sessions:/app/sessions
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://mensageira:mensageira@postgres:5432/mensageira
+      REDIS_URL: redis://redis:6379
+      WA_SESSION_PATH: /app/sessions
+      WA_ACCOUNT_ID: ""
+    restart: on-failure
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+        window: 60s
+
+  ai-worker:
+    build: ./apps/ai-worker
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://mensageira:mensageira@postgres:5432/mensageira
+      REDIS_URL: redis://redis:6379
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    restart: unless-stopped
+
+  scheduler:
+    build: ./apps/scheduler
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://mensageira:mensageira@postgres:5432/mensageira
+      REDIS_URL: redis://redis:6379
+    restart: unless-stopped
+
+  web:
+    build: ./apps/web
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+
 volumes:
   pgdata:
   redisdata:
+  wa_sessions:
