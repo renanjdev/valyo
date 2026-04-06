@@ -1,0 +1,24 @@
+export const SCORE_VALUES = {
+  MESSAGE_READ: 5,
+  REPLIED: 20,
+  DESCRIBED_PAIN: 30,
+  ASKED_FEATURE: 25,
+  ASKED_PRICE: 25,
+  REQUESTED_DEMO: 50,
+  MENTIONED_VOLUME: 15,
+  NEGATIVE_RESPONSE: -100,
+} as const;
+
+export const TEMPERATURE_THRESHOLDS = {
+  COLD_MAX: 19,
+  WARM_MAX: 49,
+  // 50+ = HOT
+} as const;
+
+export const SEQUENCE_LIMITS = {
+  MAX_STEPS_NO_READ: 3,
+  MAX_STEPS_WITH_READ: 5,
+  MAX_NURTURE_CYCLES: 2,
+} as const;
+
+export const AI_CONFIDENCE_THRESHOLD = 0.7;
