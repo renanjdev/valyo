@@ -22,7 +22,8 @@ export async function startWebServer(port: number = 3030): Promise<void> {
 
   // Serve React SPA
   app.use(express.static(WEB_DIST));
-  app.get('*', (_req, res) => {
+  // Express 5: wildcard must be named ('{*splat}')
+  app.get('/{*splat}', (_req, res) => {
     res.sendFile(join(WEB_DIST, 'index.html'));
   });
 
