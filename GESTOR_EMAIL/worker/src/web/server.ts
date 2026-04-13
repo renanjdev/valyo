@@ -8,8 +8,9 @@ import { emailsRouter } from './routes/emails.js';
 import { reportsRouter } from './routes/reports.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// After tsc build: worker/dist/web/ -> go up 3 levels to worker/, then into web/dist/
-const WEB_DIST = resolve(__dirname, '../../../web/dist');
+// After tsc build: worker/dist/web/server.js -> __dirname = worker/dist/web/
+// Go up 2 levels to reach worker/, then into web/dist/
+const WEB_DIST = resolve(__dirname, '../../web/dist');
 
 export async function startWebServer(port: number = 3030): Promise<void> {
   const app = express();
