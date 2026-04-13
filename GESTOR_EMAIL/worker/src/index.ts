@@ -7,6 +7,7 @@ import { extractEmails } from './pipeline/extractor.js';
 import { stringify } from 'yaml';
 import { applyRuntimeConfig, isConfigured } from './state/runtime-config.js';
 import { emailState, uidTracker, runManager } from './shared-state.js';
+import { startWebServer } from './web/server.js';
 const imapClient = new ImapClient();
 
 let running = true;
@@ -141,6 +142,7 @@ export async function processCycle(): Promise<void> {
 
 async function main(): Promise<void> {
   applyRuntimeConfig();
+  await startWebServer(3030);
 
   const emailStats = emailState.getStats();
 
