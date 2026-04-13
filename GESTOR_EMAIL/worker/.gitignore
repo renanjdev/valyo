@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+data/config.json
+data/worker.log
+.env
+*.log
+web/node_modules/
+web/dist/
