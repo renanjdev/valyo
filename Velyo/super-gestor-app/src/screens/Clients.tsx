@@ -1,20 +1,22 @@
 import React from 'react';
 import { View, Text, FlatList, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { Plus, Search, User } from 'lucide-react-native';
+import { MOCK_CLIENTS } from '../lib/mockData';
 
 export default function Clients() {
-  const clients = [
-    { id: '1', name: 'João da Silva', phone: '(11) 98888-7777', email: 'joao@email.com' },
-    { id: '2', name: 'Maria Oliveira', phone: '(21) 97777-6666', email: 'maria@email.com' },
-  ];
+  const navigation = useNavigation<any>();
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50">
       <View className="p-6">
         <View className="flex-row justify-between items-center mb-6">
           <Text className="text-2xl font-bold text-slate-900">Clientes</Text>
-          <TouchableOpacity className="bg-blue-600 p-2 rounded-full shadow-md">
+          <TouchableOpacity 
+            onPress={() => navigation.navigate('AddClient')}
+            className="bg-blue-600 p-2 rounded-full shadow-md"
+          >
             <Plus size={24} color="white" />
           </TouchableOpacity>
         </View>
@@ -25,7 +27,7 @@ export default function Clients() {
         </View>
 
         <FlatList
-          data={clients}
+          data={MOCK_CLIENTS}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
             <TouchableOpacity className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mb-4 flex-row items-center">

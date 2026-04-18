@@ -3,14 +3,18 @@ import React from 'react';
 import { View, Text } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { LayoutDashboard, Users, FileText, Settings } from 'lucide-react-native';
 
 // Screens
 import Dashboard from './src/screens/Dashboard';
 import Clients from './src/screens/Clients';
 import Orders from './src/screens/Orders';
+import AddClient from './src/screens/AddClient';
+import NewOrder from './src/screens/NewOrder';
 
 const Tab = createBottomTabNavigator();
+const Stack = createNativeStackNavigator();
 
 function SettingsScreen() {
   return (
@@ -21,10 +25,9 @@ function SettingsScreen() {
   );
 }
 
-export default function App() {
+function TabNavigator() {
   return (
-    <NavigationContainer>
-      <Tab.Navigator
+    <Tab.Navigator
         screenOptions={({ route }) => ({
           headerShown: false,
           tabBarStyle: {
@@ -54,6 +57,17 @@ export default function App() {
         <Tab.Screen name="Serviços" component={Orders} />
         <Tab.Screen name="Ajustes" component={SettingsScreen} />
       </Tab.Navigator>
+  );
+}
+
+export default function App() {
+  return (
+    <NavigationContainer>
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="MainTabs" component={TabNavigator} />
+        <Stack.Screen name="AddClient" component={AddClient} />
+        <Stack.Screen name="NewOrder" component={NewOrder} />
+      </Stack.Navigator>
     </NavigationContainer>
   );
 }
