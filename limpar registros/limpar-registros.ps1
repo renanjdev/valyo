@@ -72,7 +72,147 @@ $script:DenylistRules = @(
 
 $script:MinTermLength = 4
 
-# === Pure helpers (filled in subsequent tasks) ===
+# === Pure helpers ===
+
+function Test-IsAdmin {
+    [OutputType([bool])]
+    param()
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-DangerousTerm {
+    [OutputType([bool])]
+    param([Parameter(Mandatory)] [string[]] $Termos)
+
+    foreach ($term in $Termos) {
+        if ([string]::IsNullOrWhiteSpace($term)) { continue }
+        if ($term.Length -lt $script:MinTermLength) { return $true }
+        $lower = $term.ToLowerInvariant()
+        foreach ($danger in $script:DangerousTerms) {
+            if ($lower.Contains($danger)) { return $true }
+        }
+    }
+    return $false
+}
+
+function Resolve-HiveAlias {
+    [OutputType([string])]
+    param([Parameter(Mandatory)] [string] $Alias)
+
+    if (-not $script:HiveAliases.ContainsKey($Alias)) {
+        throw "Alias de hive desconhecido: '$Alias'. Aliases validos: $($script:HiveAliases.Keys -join ', ')"
+    }
+    return "Registry::$($script:HiveAliases[$Alias])"
+}
+
+function Test-PathInDenylist {
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [string[]] $UserExcludes = @()
+    )
+
+    foreach ($rule in $script:DenylistRules) {
+        switch ($rule.Mode) {
+            'exact-only' {
+                if ($Path -ieq $rule.Pattern) { return $true }
+            }
+            'wildcard' {
+                if ($Path -ilike $rule.Pattern) { return $true }
+            }
+            'wildcard-with-exception' {
+                if (($Path -ilike $rule.Pattern) -and -not ($Path -ilike $rule.ExceptionPattern)) {
+                    return $true
+                }
+            }
+            default {
+                throw "Modo de denylist desconhecido: $($rule.Mode)"
+            }
+        }
+    }
+    foreach ($pattern in $UserExcludes) {
+        if ([string]::IsNullOrWhiteSpace($pattern)) { continue }
+        if ($Path -ilike $pattern) { return $true }
+    }
+    return $false
+}
+
+function Get-ValueDataAsString {
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)] [string] $Kind,
+        [object] $Data
+    )
+
+    switch ($Kind) {
+        { $_ -in @('String', 'ExpandString') } {
+            if ($null -eq $Data) { return @() }
+            return @([string]$Data)
+        }
+        'MultiString' {
+            if ($null -eq $Data) { return @() }
+            return @(($Data -join "`n"))
+        }
+        'DWord' {
+            if ($null -eq $Data) { return @() }
+            $u = [uint32]$Data
+            $hex = '0x' + $u.ToString('x')
+            return @($u.ToString(), $hex)
+        }
+        'QWord' {
+            if ($null -eq $Data) { return @() }
+            $u = [uint64]$Data
+            $hex = '0x' + $u.ToString('x')
+            return @($u.ToString(), $hex)
+        }
+        'Binary' {
+            if ($null -eq $Data) { return @() }
+            $bytes = [byte[]]$Data
+            $hex = ($bytes | ForEach-Object { $_.ToString('x2') }) -join '-'
+            return @($hex)
+        }
+        default {
+            return @()
+        }
+    }
+}
+
+function Optimize-MatchPlan {
+    [OutputType([object[]])]
+    param([Parameter(Mandatory)] [object[]] $Plan)
+
+    $deleteKeyPaths = @($Plan | Where-Object { $_.Action -eq 'DeleteKey' } | ForEach-Object { $_.Path })
+
+    function _IsUnderAncestor {
+        param($path, $ancestors, $selfAllowed)
+        foreach ($a in $ancestors) {
+            if ($selfAllowed -and ($path -ieq $a)) { continue }
+            if ($path -ilike "$a\*") { return $true }
+        }
+        return $false
+    }
+
+    $kept = New-Object System.Collections.Generic.List[object]
+    foreach ($item in $Plan) {
+        if ($item.Action -like 'Skip*') {
+            $kept.Add($item) | Out-Null
+            continue
+        }
+        $isUnder = _IsUnderAncestor -path $item.Path -ancestors $deleteKeyPaths -selfAllowed $true
+        if ($isUnder) { continue }
+        $kept.Add($item) | Out-Null
+    }
+
+    # Skips no fim, deletes ordenados por profundidade desc, path asc
+    $sorted = $kept | Sort-Object @(
+        @{ Expression = { if ($_.Action -like 'Skip*') { 1 } else { 0 } }; Ascending = $true }
+        @{ Expression = { -(($_.Path -split '\\').Count) }; Ascending = $true }
+        @{ Expression = { $_.Path }; Ascending = $true }
+    )
+    return @($sorted)
+}
 
 # === I/O functions (filled in subsequent tasks) ===
 
