@@ -233,8 +233,8 @@ function _MatchTerm {
 }
 
 $script:VisitCounter = 0
+$script:MaxBinarySize = 65536  # nao stringificar binarios > 64KB
 
-# Mapa de nome de hive raiz -> RegistryKey
 $script:HiveRoots = @{
     'HKEY_LOCAL_MACHINE' = [Microsoft.Win32.Registry]::LocalMachine
     'HKEY_CURRENT_USER'  = [Microsoft.Win32.Registry]::CurrentUser
@@ -253,141 +253,163 @@ function _OpenHiveSubKey {
     return $root.OpenSubKey($segs[1])
 }
 
-function _VisitRegistryKeyDirect {
-    param(
-        [Microsoft.Win32.RegistryKey]$Key,
-        [string]$CanonicalPath,
-        [int]$Depth,
-        [int]$MaxDepth,
-        [string[]]$TermsLower,
-        [string[]]$UserExcludes,
-        $Results
-    )
-
-    if ($Depth -gt $MaxDepth) { return }
-    if ($null -eq $Key) { return }
-
-    $script:VisitCounter++
-    if (($script:VisitCounter % 1000) -eq 0) {
-        Write-Host "    visitadas: $($script:VisitCounter) chaves..." -ForegroundColor DarkGray
-    }
-
-    $denied = Test-PathInDenylist -Path $CanonicalPath -UserExcludes $UserExcludes
-    $hive = ($CanonicalPath -split '\\')[0]
-    $reason = if ($denied) { 'Path em denylist' } else { $null }
-
-    # Match no nome da chave
-    $segs = $CanonicalPath -split '\\'
-    $leafName = $segs[-1]
-    $hitTerm = _MatchTerm -Hay $leafName -TermsLower $TermsLower
-    if ($hitTerm) {
-        $a = if ($denied) { 'Skip(denylist)' } else { 'DeleteKey' }
-        $Results.Add([pscustomobject]@{
-            Hive = $hive; Path = $CanonicalPath; Type = 'Key'; ValueName = $null
-            MatchedOn = 'KeyName'; MatchedTerm = $hitTerm
-            Action = $a; Reason = $reason
-        }) | Out-Null
-    }
-
-    # Valores
-    $valueNames = @()
-    try { $valueNames = @($Key.GetValueNames()) } catch { }
-
-    foreach ($vname in $valueNames) {
-        if (-not [string]::IsNullOrEmpty($vname)) {
-            $hitTerm = _MatchTerm -Hay $vname -TermsLower $TermsLower
-            if ($hitTerm) {
-                $a = if ($denied) { 'Skip(denylist)' } else { 'DeleteValue' }
-                $Results.Add([pscustomobject]@{
-                    Hive = $hive; Path = $CanonicalPath; Type = 'Value'; ValueName = $vname
-                    MatchedOn = 'ValueName'; MatchedTerm = $hitTerm
-                    Action = $a; Reason = $reason
-                }) | Out-Null
-            }
-        }
-
-        $vkind = $null
-        $vdata = $null
-        try {
-            $vkind = $Key.GetValueKind($vname).ToString()
-            $vdata = $Key.GetValue($vname)
-        } catch { continue }
-
-        $stringForms = @()
-        try {
-            $stringForms = @(Get-ValueDataAsString -Kind $vkind -Data $vdata)
-        } catch { continue }
-
-        foreach ($form in $stringForms) {
-            $hitTerm = _MatchTerm -Hay $form -TermsLower $TermsLower
-            if ($hitTerm) {
-                $a = if ($denied) { 'Skip(denylist)' } else { 'DeleteValue' }
-                $displayName = if ([string]::IsNullOrEmpty($vname)) { '(default)' } else { $vname }
-                $Results.Add([pscustomobject]@{
-                    Hive = $hive; Path = $CanonicalPath; Type = 'Value'; ValueName = $displayName
-                    MatchedOn = 'ValueData'; MatchedTerm = $hitTerm
-                    Action = $a; Reason = $reason
-                }) | Out-Null
-                break
-            }
-        }
-    }
-
-    # Recursao via OpenSubKey
-    $subNames = @()
-    try { $subNames = @($Key.GetSubKeyNames()) } catch { }
-
-    foreach ($subName in $subNames) {
-        $sub = $null
-        try { $sub = $Key.OpenSubKey($subName) } catch { continue }
-        if ($null -eq $sub) { continue }
-        try {
-            _VisitRegistryKeyDirect -Key $sub `
-                -CanonicalPath "$CanonicalPath\$subName" `
-                -Depth ($Depth + 1) -MaxDepth $MaxDepth `
-                -TermsLower $TermsLower -UserExcludes $UserExcludes `
-                -Results $Results
-        } finally {
-            $sub.Dispose()
-        }
-    }
-}
-
 function Find-RegistryMatches {
     [OutputType([object[]])]
     param(
-        [Parameter(Mandatory)] [string] $HivePath,        # 'Registry::HKEY_...'
+        [Parameter(Mandatory)] [string] $HivePath,
         [Parameter(Mandatory)] [string[]] $Termos,
         [int] $MaxDepth = 50,
         [string[]] $UserExcludes = @()
     )
 
     $results = New-Object 'System.Collections.Generic.List[object]'
-    $termsLower = @($Termos | ForEach-Object { $_.ToLowerInvariant() })
+    # ToLowerInvariant uma vez
+    $termsLower = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($t in $Termos) { $termsLower.Add($t.ToLowerInvariant()) | Out-Null }
+    $termCount = $termsLower.Count
 
-    # Resolve hive root direto (mais rapido que Get-Item por path)
     $canonical = $HivePath -replace '^Registry::', ''
     $script:VisitCounter = 0
 
     $rootKey = _OpenHiveSubKey -CanonicalPath $canonical
     if ($null -eq $rootKey) {
-        Write-Host "AVISO: nao consegui abrir hive '$canonical' (acesso negado ou nao existe)." -ForegroundColor Yellow
+        Write-Host "AVISO: nao consegui abrir hive '$canonical'." -ForegroundColor Yellow
         return @()
     }
 
-    # Detectar se eh hive raiz (singleton, nao deve ser disposed)
     $isHiveRoot = $false
     foreach ($r in $script:HiveRoots.Values) {
         if ([object]::ReferenceEquals($r, $rootKey)) { $isHiveRoot = $true; break }
     }
 
-    try {
-        _VisitRegistryKeyDirect -Key $rootKey -CanonicalPath $canonical `
-            -Depth 0 -MaxDepth $MaxDepth -TermsLower $termsLower `
-            -UserExcludes $UserExcludes -Results $results
-    } finally {
-        if (-not $isHiveRoot -and $rootKey) {
-            $rootKey.Dispose()
+    # Stack iterativo: items sao [object[]] (Key, CanonicalPath, Depth, OwnedByUs)
+    $stack = New-Object 'System.Collections.Generic.Stack[object[]]'
+    $stack.Push(@($rootKey, $canonical, 0, (-not $isHiveRoot)))
+
+    while ($stack.Count -gt 0) {
+        $frame = $stack.Pop()
+        $key = $frame[0]
+        $kpath = $frame[1]
+        $depth = $frame[2]
+        $owned = $frame[3]
+
+        try {
+            if ($depth -gt $MaxDepth) { continue }
+            $script:VisitCounter++
+            if (($script:VisitCounter % 5000) -eq 0) {
+                Write-Host "    visitadas: $($script:VisitCounter) chaves..." -ForegroundColor DarkGray
+            }
+
+            # Denylist check (inline o split do hive)
+            $firstSlash = $kpath.IndexOf('\')
+            $hive = if ($firstSlash -ge 0) { $kpath.Substring(0, $firstSlash) } else { $kpath }
+            $denied = Test-PathInDenylist -Path $kpath -UserExcludes $UserExcludes
+
+            # Match no nome da chave (leaf name)
+            $lastSlash = $kpath.LastIndexOf('\')
+            $leafName = if ($lastSlash -ge 0) { $kpath.Substring($lastSlash + 1) } else { $kpath }
+            $leafLower = $leafName.ToLowerInvariant()
+            $hitTerm = $null
+            for ($ti = 0; $ti -lt $termCount; $ti++) {
+                if ($leafLower.Contains($termsLower[$ti])) { $hitTerm = $termsLower[$ti]; break }
+            }
+            if ($hitTerm) {
+                $action = if ($denied) { 'Skip(denylist)' } else { 'DeleteKey' }
+                $reason = if ($denied) { 'Path em denylist' } else { $null }
+                $results.Add([pscustomobject]@{
+                    Hive = $hive; Path = $kpath; Type = 'Key'; ValueName = $null
+                    MatchedOn = 'KeyName'; MatchedTerm = $hitTerm
+                    Action = $action; Reason = $reason
+                }) | Out-Null
+            }
+
+            # Valores
+            $valueNames = @()
+            try { $valueNames = @($key.GetValueNames()) } catch { }
+
+            if ($valueNames.Count -gt 0) {
+                foreach ($vname in $valueNames) {
+                    # Match no nome do valor
+                    if ($vname.Length -gt 0) {
+                        $vnLower = $vname.ToLowerInvariant()
+                        $hitTerm = $null
+                        for ($ti = 0; $ti -lt $termCount; $ti++) {
+                            if ($vnLower.Contains($termsLower[$ti])) { $hitTerm = $termsLower[$ti]; break }
+                        }
+                        if ($hitTerm) {
+                            $action = if ($denied) { 'Skip(denylist)' } else { 'DeleteValue' }
+                            $reason = if ($denied) { 'Path em denylist' } else { $null }
+                            $results.Add([pscustomobject]@{
+                                Hive = $hive; Path = $kpath; Type = 'Value'; ValueName = $vname
+                                MatchedOn = 'ValueName'; MatchedTerm = $hitTerm
+                                Action = $action; Reason = $reason
+                            }) | Out-Null
+                        }
+                    }
+
+                    # Match no dado (default value usa null no .NET API)
+                    $apiName = if ($vname.Length -eq 0) { $null } else { $vname }
+                    $vkind = $null
+                    $vdata = $null
+                    try {
+                        $vkind = $key.GetValueKind($apiName)
+                        $vdata = $key.GetValue($apiName)
+                    } catch { continue }
+
+                    # Skip binarios grandes (raramente contem strings buscaveis)
+                    if ($vkind -eq [Microsoft.Win32.RegistryValueKind]::Binary) {
+                        if ($null -ne $vdata -and $vdata.Length -gt $script:MaxBinarySize) { continue }
+                    }
+
+                    # Inline string-form generation (so casos comuns)
+                    $forms = $null
+                    if ($vkind -eq [Microsoft.Win32.RegistryValueKind]::String -or
+                        $vkind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+                        if ($null -ne $vdata) { $forms = @([string]$vdata) }
+                    } elseif ($vkind -eq [Microsoft.Win32.RegistryValueKind]::MultiString) {
+                        if ($null -ne $vdata) { $forms = @(($vdata -join "`n")) }
+                    } else {
+                        # DWord/QWord/Binary: usar helper
+                        try { $forms = @(Get-ValueDataAsString -Kind ($vkind.ToString()) -Data $vdata) } catch { continue }
+                    }
+                    if (-not $forms) { continue }
+
+                    foreach ($form in $forms) {
+                        if ([string]::IsNullOrEmpty($form)) { continue }
+                        $fLower = $form.ToLowerInvariant()
+                        $hitTerm = $null
+                        for ($ti = 0; $ti -lt $termCount; $ti++) {
+                            if ($fLower.Contains($termsLower[$ti])) { $hitTerm = $termsLower[$ti]; break }
+                        }
+                        if ($hitTerm) {
+                            $action = if ($denied) { 'Skip(denylist)' } else { 'DeleteValue' }
+                            $reason = if ($denied) { 'Path em denylist' } else { $null }
+                            $displayName = if ($vname.Length -eq 0) { '(default)' } else { $vname }
+                            $results.Add([pscustomobject]@{
+                                Hive = $hive; Path = $kpath; Type = 'Value'; ValueName = $displayName
+                                MatchedOn = 'ValueData'; MatchedTerm = $hitTerm
+                                Action = $action; Reason = $reason
+                            }) | Out-Null
+                            break
+                        }
+                    }
+                }
+            }
+
+            # Empilhar subchaves
+            $subNames = @()
+            try { $subNames = @($key.GetSubKeyNames()) } catch { }
+            if ($subNames.Count -gt 0) {
+                foreach ($subName in $subNames) {
+                    $sub = $null
+                    try { $sub = $key.OpenSubKey($subName) } catch { continue }
+                    if ($null -ne $sub) {
+                        $stack.Push(@($sub, "$kpath\$subName", $depth + 1, $true))
+                    }
+                }
+            }
+        } finally {
+            if ($owned -and $key) { $key.Dispose() }
         }
     }
 
