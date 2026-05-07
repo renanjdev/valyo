@@ -70,6 +70,13 @@ $dword = Get-ValueDataAsString -Kind 'DWord' -Data ([uint32]31)
 Assert-True -Condition ($dword -contains '31')   -Label 'DWord exporta decimal'
 Assert-True -Condition ($dword -contains '0x1f') -Label 'DWord exporta hex 0x lowercase sem padding'
 
+# DWord negativo (Int32 com bit alto setado): Win32 retorna como Int32 com sinal
+$dwordNeg = Get-ValueDataAsString -Kind 'DWord' -Data ([int32]-1982862544)
+# -1982862544 (signed Int32) == 2312104752 (UInt32) == 0x89db_1eb0 . Verificar via BitConverter:
+$expectedU = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]-1982862544), 0)
+Assert-True -Condition ($dwordNeg -contains $expectedU.ToString())   -Label "DWord negativo converte sem overflow"
+Assert-True -Condition ($dwordNeg -contains ('0x' + $expectedU.ToString('x'))) -Label "DWord negativo gera hex correto"
+
 $qword = Get-ValueDataAsString -Kind 'QWord' -Data ([uint64]0xDEADBEEFCAFE)
 Assert-True -Condition ($qword -contains '0xdeadbeefcafe') -Label 'QWord exporta hex lowercase com prefixo 0x'
 

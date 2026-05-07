@@ -157,13 +157,16 @@ function Get-ValueDataAsString {
         }
         'DWord' {
             if ($null -eq $Data) { return @() }
-            $u = [uint32]$Data
+            # Win32 retorna DWORD como Int32 com sinal; reinterpretar bytes pra UInt32
+            $bytes = [System.BitConverter]::GetBytes([int32]$Data)
+            $u = [System.BitConverter]::ToUInt32($bytes, 0)
             $hex = '0x' + $u.ToString('x')
             return @($u.ToString(), $hex)
         }
         'QWord' {
             if ($null -eq $Data) { return @() }
-            $u = [uint64]$Data
+            $bytes = [System.BitConverter]::GetBytes([int64]$Data)
+            $u = [System.BitConverter]::ToUInt64($bytes, 0)
             $hex = '0x' + $u.ToString('x')
             return @($u.ToString(), $hex)
         }
