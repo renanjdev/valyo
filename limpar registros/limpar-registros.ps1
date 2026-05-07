@@ -214,7 +214,131 @@ function Optimize-MatchPlan {
     return @($sorted)
 }
 
-# === I/O functions (filled in subsequent tasks) ===
+# === I/O functions ===
+
+function _MatchTerm {
+    param(
+        [string]$Hay,
+        [string[]]$TermsLower
+    )
+    if ([string]::IsNullOrEmpty($Hay)) { return $null }
+    $hayLower = $Hay.ToLowerInvariant()
+    foreach ($t in $TermsLower) {
+        if ($hayLower.Contains($t)) { return $t }
+    }
+    return $null
+}
+
+function _VisitRegistryKey {
+    param(
+        $Path,
+        $Depth,
+        $MaxDepth,
+        $TermsLower,
+        $UserExcludes,
+        $Results
+    )
+
+    if ($Depth -gt $MaxDepth) { return }
+
+    $key = $null
+    try {
+        $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+    } catch {
+        return
+    }
+
+    $canonical = $key.Name
+    $denied = Test-PathInDenylist -Path $canonical -UserExcludes $UserExcludes
+    $hive = ($canonical -split '\\')[0]
+    $action = if ($denied) { 'Skip(denylist)' } else { $null }
+    $reason = if ($denied) { 'Path em denylist' } else { $null }
+
+    # Match no nome da chave
+    $segs = $canonical -split '\\'
+    $leafName = $segs[-1]
+    $hitTerm = _MatchTerm -Hay $leafName -TermsLower $TermsLower
+    if ($hitTerm) {
+        $a = if ($denied) { 'Skip(denylist)' } else { 'DeleteKey' }
+        $Results.Add([pscustomobject]@{
+            Hive = $hive; Path = $canonical; Type = 'Key'; ValueName = $null
+            MatchedOn = 'KeyName'; MatchedTerm = $hitTerm
+            Action = $a; Reason = $reason
+        }) | Out-Null
+    }
+
+    # Match em valores
+    $valueNames = @()
+    try { $valueNames = @($key.GetValueNames()) } catch { }
+
+    foreach ($vname in $valueNames) {
+        # Match no nome do valor (pula nome vazio = (default))
+        if (-not [string]::IsNullOrEmpty($vname)) {
+            $hitTerm = _MatchTerm -Hay $vname -TermsLower $TermsLower
+            if ($hitTerm) {
+                $a = if ($denied) { 'Skip(denylist)' } else { 'DeleteValue' }
+                $Results.Add([pscustomobject]@{
+                    Hive = $hive; Path = $canonical; Type = 'Value'; ValueName = $vname
+                    MatchedOn = 'ValueName'; MatchedTerm = $hitTerm
+                    Action = $a; Reason = $reason
+                }) | Out-Null
+            }
+        }
+
+        # Match no dado
+        $vkind = $null
+        $vdata = $null
+        try {
+            $vkind = $key.GetValueKind($vname).ToString()
+            $vdata = $key.GetValue($vname)
+        } catch { continue }
+
+        $stringForms = @(Get-ValueDataAsString -Kind $vkind -Data $vdata)
+        foreach ($form in $stringForms) {
+            $hitTerm = _MatchTerm -Hay $form -TermsLower $TermsLower
+            if ($hitTerm) {
+                $a = if ($denied) { 'Skip(denylist)' } else { 'DeleteValue' }
+                $displayName = if ([string]::IsNullOrEmpty($vname)) { '(default)' } else { $vname }
+                $Results.Add([pscustomobject]@{
+                    Hive = $hive; Path = $canonical; Type = 'Value'; ValueName = $displayName
+                    MatchedOn = 'ValueData'; MatchedTerm = $hitTerm
+                    Action = $a; Reason = $reason
+                }) | Out-Null
+                break
+            }
+        }
+    }
+
+    # Recursao
+    $subNames = @()
+    try { $subNames = @($key.GetSubKeyNames()) } catch { }
+    foreach ($subName in $subNames) {
+        $childPath = "$Path\$subName"
+        _VisitRegistryKey -Path $childPath -Depth ($Depth + 1) `
+            -MaxDepth $MaxDepth -TermsLower $TermsLower `
+            -UserExcludes $UserExcludes -Results $Results
+    }
+}
+
+function Find-RegistryMatches {
+    [OutputType([object[]])]
+    param(
+        [Parameter(Mandatory)] [string] $HivePath,        # 'Registry::HKEY_...'
+        [Parameter(Mandatory)] [string[]] $Termos,
+        [int] $MaxDepth = 50,
+        [string[]] $UserExcludes = @()
+    )
+
+    $results = New-Object 'System.Collections.Generic.List[object]'
+    $termsLower = @($Termos | ForEach-Object { $_.ToLowerInvariant() })
+
+    _VisitRegistryKey -Path $HivePath -Depth 0 `
+        -MaxDepth $MaxDepth -TermsLower $termsLower `
+        -UserExcludes $UserExcludes -Results $results
+
+    # Comma operator forca array de qualquer tamanho (incluindo 0 e 1)
+    , $results.ToArray()
+}
 
 # === Main flow ===
 
