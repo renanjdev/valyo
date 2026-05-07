@@ -42,7 +42,35 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# === Constants (filled in subsequent tasks) ===
+# === Constants ===
+
+$script:DangerousTerms = @(
+    'microsoft', 'windows', 'system', 'intel', 'nvidia',
+    'amd', 'realtek', 'driver', 'kernel', 'policies'
+)
+
+$script:HiveAliases = @{
+    'HKLM_SOFTWARE' = 'HKEY_LOCAL_MACHINE\SOFTWARE'
+    'HKLM_WOW64'    = 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node'
+    'HKCU_SOFTWARE' = 'HKEY_CURRENT_USER\SOFTWARE'
+    'HKCR'          = 'HKEY_CLASSES_ROOT'
+}
+
+# Denylist rules: cada item tem Pattern, Mode, e (opcional) ExceptionPattern.
+# Mode: 'exact-only' | 'wildcard' | 'wildcard-with-exception'
+$script:DenylistRules = @(
+    [pscustomobject]@{ Pattern = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\*';             Mode = 'wildcard-with-exception'; ExceptionPattern = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' }
+    [pscustomobject]@{ Pattern = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\*';                         Mode = 'wildcard';                ExceptionPattern = $null }
+    [pscustomobject]@{ Pattern = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography\*';                       Mode = 'wildcard';                ExceptionPattern = $null }
+    [pscustomobject]@{ Pattern = 'HKEY_LOCAL_MACHINE\SOFTWARE\Policies\*';                                     Mode = 'wildcard';                ExceptionPattern = $null }
+    [pscustomobject]@{ Pattern = 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\*'; Mode = 'wildcard-with-exception'; ExceptionPattern = 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' }
+    [pscustomobject]@{ Pattern = 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows NT\*';             Mode = 'wildcard';                ExceptionPattern = $null }
+    [pscustomobject]@{ Pattern = 'HKEY_CLASSES_ROOT\CLSID';                                                    Mode = 'exact-only';              ExceptionPattern = $null }
+    [pscustomobject]@{ Pattern = 'HKEY_CLASSES_ROOT\Interface';                                                Mode = 'exact-only';              ExceptionPattern = $null }
+    [pscustomobject]@{ Pattern = 'HKEY_CLASSES_ROOT\TypeLib';                                                  Mode = 'exact-only';              ExceptionPattern = $null }
+)
+
+$script:MinTermLength = 4
 
 # === Pure helpers (filled in subsequent tasks) ===
 

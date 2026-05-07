@@ -28,7 +28,13 @@ function Assert-False {
     Assert-Equal -Actual $Condition -Expected $false -Label $Label
 }
 
-# === Sanity checks (filled in subsequent tasks) ===
+# === Sanity checks ===
+
+# --- Constants ---
+Assert-Equal -Actual $script:DangerousTerms.Count -Expected 10 -Label 'DangerousTerms tem 10 itens'
+Assert-Equal -Actual $script:HiveAliases['HKLM_SOFTWARE'] -Expected 'HKEY_LOCAL_MACHINE\SOFTWARE' -Label 'HiveAlias HKLM_SOFTWARE resolve correto'
+Assert-Equal -Actual $script:HiveAliases['HKLM_WOW64'] -Expected 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node' -Label 'HiveAlias HKLM_WOW64 resolve correto'
+Assert-Equal -Actual $script:DenylistRules.Count -Expected 9 -Label 'DenylistRules tem 9 entradas'
 
 if ($failures -gt 0) {
     Write-Host "`n$failures falha(s) detectada(s)." -ForegroundColor Red
