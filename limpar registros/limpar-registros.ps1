@@ -340,6 +340,282 @@ function Find-RegistryMatches {
     , $results.ToArray()
 }
 
+function Export-RegistryBackup {
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)] [object[]] $Plan,
+        [Parameter(Mandatory)] [string] $OutDir,
+        [Parameter(Mandatory)] [string] $Timestamp
+    )
+
+    # Coletar set unico de chaves a tocar
+    $keysToBackup = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($item in $Plan) {
+        if ($item.Action -notlike 'Delete*') { continue }
+        $null = $keysToBackup.Add($item.Path)
+    }
+
+    if ($keysToBackup.Count -eq 0) { return $null }
+
+    $backupDir = Join-Path $OutDir "backup-$Timestamp"
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+
+    $manifestLines = New-Object 'System.Collections.Generic.List[string]'
+    $manifestLines.Add("# Backup gerado em $Timestamp") | Out-Null
+    $manifestLines.Add("# Cada .reg cobre uma chave inteira (subarvore). Restaure via duplo-clique ou:") | Out-Null
+    $manifestLines.Add("# for %f in (*.reg) do reg import `"%f`"") | Out-Null
+    $manifestLines.Add("") | Out-Null
+
+    $i = 0
+    foreach ($keyPath in $keysToBackup) {
+        $i++
+        $safe = $keyPath -replace '[\\:*?"<>|]', '_'
+        if ($safe.Length -gt 180) { $safe = $safe.Substring(0, 180) }
+        $hashInput = [System.Text.Encoding]::UTF8.GetBytes($keyPath)
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        $hash = [System.BitConverter]::ToString($sha.ComputeHash($hashInput)).Replace('-', '').Substring(0, 8).ToLower()
+        $sha.Dispose()
+        $fname = "{0:D4}_{1}_{2}.reg" -f $i, $safe, $hash
+        $fullOut = Join-Path $backupDir $fname
+
+        # reg.exe export usa formato HKLM\... (sem Registry::)
+        & reg.exe export $keyPath $fullOut /y 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao exportar '$keyPath' (reg.exe exit $LASTEXITCODE). Backup abortado."
+        }
+        $manifestLines.Add("$fname  =>  $keyPath") | Out-Null
+    }
+
+    $manifestPath = Join-Path $backupDir 'manifest.txt'
+    [System.IO.File]::WriteAllLines($manifestPath, $manifestLines, [System.Text.UTF8Encoding]::new($true))
+
+    # Aviso se backup total > 100MB
+    $totalBytes = (Get-ChildItem -LiteralPath $backupDir -File | Measure-Object -Sum Length).Sum
+    if ($totalBytes -gt 100MB) {
+        $mb = [math]::Round($totalBytes / 1MB, 1)
+        Write-Host "AVISO: backup total $mb MB (> 100MB). Espaco em disco e tempo de import podem ser significativos." -ForegroundColor Yellow
+    }
+
+    return $backupDir
+}
+
+function Show-ConfirmPrompt {
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)] [object[]] $Plan,
+        [string] $BackupDir,
+        [switch] $BypassYes
+    )
+
+    $deleteKey = @($Plan | Where-Object { $_.Action -eq 'DeleteKey' }).Count
+    $deleteVal = @($Plan | Where-Object { $_.Action -eq 'DeleteValue' }).Count
+    $skips     = @($Plan | Where-Object { $_.Action -like 'Skip*' }).Count
+
+    Write-Host ""
+    Write-Host "Vai apagar $deleteKey chaves e $deleteVal valores." -ForegroundColor Yellow
+    if ($BackupDir) { Write-Host "Backup em: $BackupDir" }
+    Write-Host "Skips: $skips (ver report.log)"
+
+    $total = $deleteKey + $deleteVal
+    if ($total -gt 5000) {
+        Write-Host ""
+        Write-Host "AVISO: Plano grande ($total itens). Recomendado revisar report.csv antes de confirmar." -ForegroundColor Red
+    }
+
+    if ($BypassYes) {
+        Write-Host "(-Yes informado, pulando prompt)" -ForegroundColor DarkGray
+        return $true
+    }
+
+    Write-Host ""
+    Write-Host "Pra confirmar, digite APAGAR (em maiusculas): " -NoNewline
+    $userInput = Read-Host
+    return ($userInput -ceq 'APAGAR')
+}
+
+function Show-InteractivePrompt {
+    [OutputType([string])]
+    param([Parameter(Mandatory)] [object] $Item)
+
+    $desc = if ($Item.Type -eq 'Key') {
+        "[Key]   $($Item.Path)"
+    } else {
+        "[Value] $($Item.Path) value=`"$($Item.ValueName)`""
+    }
+    Write-Host ""
+    Write-Host $desc -ForegroundColor Yellow
+    Write-Host "  Match: $($Item.MatchedOn)='$($Item.MatchedTerm)'"
+    while ($true) {
+        Write-Host "  [s]im / [n]ao / [a]plicar tudo / [q]uit: " -NoNewline
+        $r = Read-Host
+        switch ($r.ToLowerInvariant()) {
+            's' { return 's' }
+            'n' { return 'n' }
+            'a' { return 'a' }
+            'q' { return 'q' }
+            default { Write-Host "    Opcao invalida." -ForegroundColor Red }
+        }
+    }
+}
+
+function Invoke-DeletionPlan {
+    param(
+        [Parameter(Mandatory)] [object[]] $Plan,
+        [switch] $Interactive
+    )
+
+    $applyAll = -not $Interactive
+    $userQuit = $false
+    $errorCount = 0
+
+    foreach ($item in $Plan) {
+        if ($userQuit) { break }
+        if ($item.Action -like 'Skip*') { continue }
+
+        if ($Interactive -and -not $applyAll) {
+            $resp = Show-InteractivePrompt -Item $item
+            switch ($resp) {
+                'n' { $item.Action = 'Skip(user)'; $item.Reason = 'pulado pelo usuario'; continue }
+                'a' { $applyAll = $true }
+                'q' { $userQuit = $true; continue }
+                's' { } # cai pra delete
+            }
+        }
+
+        try {
+            $registryPath = "Registry::$($item.Path)"
+            if ($item.Type -eq 'Key') {
+                Remove-Item -LiteralPath $registryPath -Recurse -Force -ErrorAction Stop
+                $item.Action = 'Deleted(Key)'
+            } else {
+                Remove-ItemProperty -LiteralPath $registryPath -Name $item.ValueName -Force -ErrorAction Stop
+                $item.Action = 'Deleted(Value)'
+            }
+        } catch {
+            $errorCount++
+            $msg = $_.Exception.Message
+            $reason = if ($msg -match 'access|denied|denegado|negado') { 'AccessDenied' }
+                      elseif ($msg -match 'use|process|outro processo') { 'InUse' }
+                      elseif ($msg -match 'not found|nao foi encontrado|cannot find|nao existe') { 'NotFound' }
+                      else { 'Other' }
+            $item.Action = "Skip($reason)"
+            $item.Reason = $msg
+        }
+    }
+
+    return @{
+        Plan = $Plan
+        ErrorCount = $errorCount
+        UserQuit = $userQuit
+    }
+}
+
+function Write-Report {
+    param(
+        [Parameter(Mandatory)] [object[]] $Plan,
+        [Parameter(Mandatory)] [string] $OutDir,
+        [Parameter(Mandatory)] [string] $Timestamp,
+        [Parameter(Mandatory)] [string] $Mode,
+        [Parameter(Mandatory)] [string[]] $Termos,
+        [Parameter(Mandatory)] [string[]] $HiveLabels,
+        [string] $BackupDir = $null
+    )
+
+    $logPath = Join-Path $OutDir "report-$Timestamp.log"
+    $csvPath = Join-Path $OutDir "report-$Timestamp.csv"
+
+    $deleteKey = @($Plan | Where-Object { $_.Action -eq 'DeleteKey' -or $_.Action -eq 'Deleted(Key)' }).Count
+    $deleteVal = @($Plan | Where-Object { $_.Action -eq 'DeleteValue' -or $_.Action -eq 'Deleted(Value)' }).Count
+    $skipDeny  = @($Plan | Where-Object { $_.Action -eq 'Skip(denylist)' }).Count
+    $skipUser  = @($Plan | Where-Object { $_.Action -eq 'Skip(user)' }).Count
+    $skipErr   = @($Plan | Where-Object { $_.Action -like 'Skip(*' -and $_.Action -ne 'Skip(denylist)' -and $_.Action -ne 'Skip(user)' }).Count
+
+    # --- LOG ---
+    $log = New-Object 'System.Collections.Generic.List[string]'
+    $log.Add("limpar-registros.ps1 - $Timestamp") | Out-Null
+    $log.Add("Modo: $Mode") | Out-Null
+    $log.Add("Termos: $($Termos -join ', ')") | Out-Null
+    $log.Add("Hives: $($HiveLabels -join ', ')") | Out-Null
+    $backupLabel = if ($BackupDir) { $BackupDir } else { 'nenhum em dry-run' }
+    $log.Add("Backup: $backupLabel") | Out-Null
+    $log.Add("") | Out-Null
+    $log.Add("Sumario:") | Out-Null
+    $log.Add("  Chaves a apagar/apagadas: $deleteKey") | Out-Null
+    $log.Add("  Valores a apagar/apagados: $deleteVal") | Out-Null
+    $log.Add("  Pulados (denylist):       $skipDeny") | Out-Null
+    $log.Add("  Pulados (usuario):        $skipUser") | Out-Null
+    $log.Add("  Pulados (erro):           $skipErr") | Out-Null
+    $log.Add("") | Out-Null
+
+    $byHive = $Plan | Group-Object Hive
+    foreach ($g in $byHive) {
+        $log.Add("=== $($g.Name) ===") | Out-Null
+        foreach ($it in $g.Group) {
+            $tag = "[$($it.Action)]"
+            if ($it.Type -eq 'Key') {
+                $log.Add("$tag $($it.Path)   (matched: $($it.MatchedOn)='$($it.MatchedTerm)')") | Out-Null
+            } else {
+                $log.Add("$tag $($it.Path) value=`"$($it.ValueName)`" (matched: $($it.MatchedOn)='$($it.MatchedTerm)')") | Out-Null
+            }
+            if ($it.Reason) { $log.Add("    Reason: $($it.Reason)") | Out-Null }
+        }
+        $log.Add("") | Out-Null
+    }
+
+    [System.IO.File]::WriteAllLines($logPath, $log, [System.Text.UTF8Encoding]::new($true))
+
+    # --- CSV ---
+    $csv = New-Object 'System.Collections.Generic.List[string]'
+    $csv.Add('Hive;Path;Type;ValueName;MatchedOn;MatchedTerm;Action;Reason') | Out-Null
+    foreach ($it in $Plan) {
+        $row = @($it.Hive, $it.Path, $it.Type, $it.ValueName,
+                 $it.MatchedOn, $it.MatchedTerm, $it.Action, $it.Reason) | ForEach-Object {
+            $s = if ($null -eq $_) { '' } else { [string]$_ }
+            if ($s -match '[;"\r\n]') { '"' + ($s -replace '"', '""') + '"' } else { $s }
+        }
+        $csv.Add(($row -join ';')) | Out-Null
+    }
+    [System.IO.File]::WriteAllLines($csvPath, $csv, [System.Text.UTF8Encoding]::new($true))
+
+    return [pscustomobject]@{ LogPath = $logPath; CsvPath = $csvPath }
+}
+
+function Invoke-SelfElevate {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptPath,
+        [Parameter(Mandatory)] [hashtable] $BoundParams
+    )
+
+    $argList = New-Object 'System.Collections.Generic.List[string]'
+    $argList.Add('-NoProfile') | Out-Null
+    $argList.Add('-ExecutionPolicy') | Out-Null
+    $argList.Add('Bypass') | Out-Null
+    $argList.Add('-File') | Out-Null
+    $argList.Add("`"$ScriptPath`"") | Out-Null
+
+    foreach ($k in $BoundParams.Keys) {
+        $v = $BoundParams[$k]
+        if ($v -is [switch]) {
+            if ($v.IsPresent) { $argList.Add("-$k") | Out-Null }
+        } elseif ($v -is [array]) {
+            $argList.Add("-$k") | Out-Null
+            $joined = ($v | ForEach-Object { "`"$_`"" }) -join ','
+            $argList.Add($joined) | Out-Null
+        } else {
+            $argList.Add("-$k") | Out-Null
+            $argList.Add("`"$v`"") | Out-Null
+        }
+    }
+
+    try {
+        $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs -Wait -PassThru -ErrorAction Stop
+        return $proc.ExitCode
+    } catch {
+        Write-Host "Falha ao auto-elevar: $($_.Exception.Message)" -ForegroundColor Red
+        return 1
+    }
+}
+
 # === Main flow ===
 
 function Invoke-MainFlow {
