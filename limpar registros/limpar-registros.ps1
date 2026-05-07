@@ -619,14 +619,135 @@ function Invoke-SelfElevate {
 # === Main flow ===
 
 function Invoke-MainFlow {
+    # === Fase 0: pre-condicoes ===
+
+    # 0.1 Validacao basica de Termo
     if (-not $Termo -or $Termo.Count -eq 0) {
         Write-Host "ERRO: parametro -Termo eh obrigatorio." -ForegroundColor Red
         exit 1
     }
-    Write-Host "limpar-registros.ps1 - placeholder main flow" -ForegroundColor Cyan
-    Write-Host "Termos: $($Termo -join ', ')"
-    Write-Host "Hives: $($Hives -join ', ')"
-    Write-Host "Apply: $Apply | Interactive: $Interactive | Force: $Force"
+
+    # 0.2 Resolver -OutDir absoluto antes de eleve (sobrevive a CWD do filho)
+    if (-not [System.IO.Path]::IsPathRooted($OutDir)) {
+        $absOutDir = Join-Path (Get-Location).Path $OutDir
+    } else {
+        $absOutDir = $OutDir
+    }
+    $absOutDir = [System.IO.Path]::GetFullPath($absOutDir)
+
+    # 0.3 Eleve se nao admin
+    if (-not (Test-IsAdmin)) {
+        Write-Host "Elevando privilegios via UAC..." -ForegroundColor Cyan
+        $bp = @{} + $PSBoundParameters
+        $bp['OutDir'] = $absOutDir
+        $code = Invoke-SelfElevate -ScriptPath $PSCommandPath -BoundParams $bp
+        exit $code
+    }
+
+    # 0.4 stdin nao-interativo + apply sem -Yes
+    if ($Apply -and -not $Yes -and [Console]::IsInputRedirected) {
+        Write-Host "ERRO: stdin nao-interativo com -Apply requer -Yes." -ForegroundColor Red
+        exit 1
+    }
+
+    # 0.5 Validar termos perigosos / curtos
+    if (Test-DangerousTerm -Termos $Termo) {
+        if (-not $Force) {
+            Write-Host "ERRO: termo perigoso ou < $script:MinTermLength chars detectado. Use -Force pra prosseguir." -ForegroundColor Red
+            exit 2
+        }
+        Write-Host "AVISO: -Force ativo, ignorando gate de termo perigoso/curto." -ForegroundColor Yellow
+    }
+
+    # 0.6 Resolver hives
+    $hivePaths = @($Hives | ForEach-Object { Resolve-HiveAlias -Alias $_ })
+    $hiveLabels = @($Hives | ForEach-Object { $script:HiveAliases[$_] })
+
+    # 0.7 Criar OutDir
+    if (-not (Test-Path $absOutDir)) {
+        try { New-Item -ItemType Directory -Path $absOutDir -Force | Out-Null }
+        catch {
+            Write-Host "ERRO: nao consegui criar OutDir '$absOutDir': $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    $timestamp = Get-Date -Format 'yyyy-MM-dd-HHmmss'
+    $mode = if ($Apply) { 'apply' } elseif ($Interactive) { 'interactive' } else { 'dry-run' }
+
+    Write-Host ""
+    Write-Host "=== limpar-registros ===" -ForegroundColor Cyan
+    Write-Host "Modo: $mode | Termos: $($Termo -join ', ')"
+    Write-Host "Hives: $($hiveLabels -join ', ')"
+    Write-Host ""
+
+    # === Fase 1: varredura ===
+    Write-Host "Varrendo registro..." -ForegroundColor Cyan
+    $allMatches = New-Object 'System.Collections.Generic.List[object]'
+    for ($i = 0; $i -lt $hivePaths.Count; $i++) {
+        Write-Host "  [$($i+1)/$($hivePaths.Count)] $($hiveLabels[$i])"
+        $hits = Find-RegistryMatches -HivePath $hivePaths[$i] -Termos $Termo -MaxDepth $MaxDepth -UserExcludes $Exclude
+        foreach ($h in $hits) { $allMatches.Add($h) | Out-Null }
+    }
+
+    # === Fase 2: otimizar ===
+    $plan = @(Optimize-MatchPlan -Plan $allMatches.ToArray())
+
+    $deleteCount = @($plan | Where-Object { $_.Action -like 'Delete*' }).Count
+    $skipCount = @($plan | Where-Object { $_.Action -like 'Skip*' }).Count
+    $dedupCount = $allMatches.Count - $plan.Count
+
+    Write-Host ""
+    Write-Host "Encontrados $deleteCount itens a apagar ($dedupCount deduplicados, $skipCount skips)." -ForegroundColor Cyan
+
+    # Dry-run: gera relatorio e sai
+    if (-not $Apply -and -not $Interactive) {
+        $r = Write-Report -Plan $plan -OutDir $absOutDir -Timestamp $timestamp -Mode 'dry-run' -Termos $Termo -HiveLabels $hiveLabels
+        Write-Host "Relatorio: $($r.LogPath)" -ForegroundColor Green
+        Write-Host "CSV:       $($r.CsvPath)" -ForegroundColor Green
+        exit 0
+    }
+
+    # === Fase 3: backup ===
+    $backupDir = $null
+    if ($Apply -and $deleteCount -gt 0) {
+        Write-Host "Criando backup..." -ForegroundColor Cyan
+        try {
+            $backupDir = Export-RegistryBackup -Plan $plan -OutDir $absOutDir -Timestamp $timestamp
+            Write-Host "Backup: $backupDir" -ForegroundColor Green
+        } catch {
+            Write-Host "ERRO no backup: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Report -Plan $plan -OutDir $absOutDir -Timestamp $timestamp -Mode 'apply-aborted' -Termos $Termo -HiveLabels $hiveLabels | Out-Null
+            exit 3
+        }
+    }
+
+    # === Fase 4: confirmacao ===
+    if ($Apply) {
+        $ok = Show-ConfirmPrompt -Plan $plan -BackupDir $backupDir -BypassYes:$Yes
+        if (-not $ok) {
+            Write-Host "Cancelado pelo usuario." -ForegroundColor Yellow
+            Write-Report -Plan $plan -OutDir $absOutDir -Timestamp $timestamp -Mode 'cancelled' -Termos $Termo -HiveLabels $hiveLabels -BackupDir $backupDir | Out-Null
+            exit 130
+        }
+    }
+
+    # === Fase 5: execucao ===
+    Write-Host ""
+    Write-Host "Executando..." -ForegroundColor Cyan
+    $exec = Invoke-DeletionPlan -Plan $plan -Interactive:$Interactive
+
+    if ($exec.UserQuit) {
+        Write-Host "Modo interativo: cancelado pelo usuario (q)." -ForegroundColor Yellow
+    }
+
+    # === Fase 6: relatorio ===
+    $r = Write-Report -Plan $exec.Plan -OutDir $absOutDir -Timestamp $timestamp -Mode $mode -Termos $Termo -HiveLabels $hiveLabels -BackupDir $backupDir
+    Write-Host ""
+    Write-Host "Relatorio: $($r.LogPath)" -ForegroundColor Green
+    Write-Host "CSV:       $($r.CsvPath)" -ForegroundColor Green
+
+    if ($exec.ErrorCount -gt 0) { exit 4 } else { exit 0 }
 }
 
 # Main-flow gate: skip when dot-sourced
