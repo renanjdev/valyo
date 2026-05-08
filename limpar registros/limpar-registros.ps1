@@ -443,24 +443,51 @@ function Export-RegistryBackup {
     $manifestLines.Add("# for %f in (*.reg) do reg import `"%f`"") | Out-Null
     $manifestLines.Add("") | Out-Null
 
+    # Calcula budget de filename baseado no path do backup dir (Windows MAX_PATH = 260)
+    $reservedForName = [Math]::Max(40, 250 - $backupDir.Length)
+
     $i = 0
+    $failures = New-Object 'System.Collections.Generic.List[string]'
     foreach ($keyPath in $keysToBackup) {
         $i++
-        $safe = $keyPath -replace '[\\:*?"<>|]', '_'
-        if ($safe.Length -gt 180) { $safe = $safe.Substring(0, 180) }
+        # Apenas o leaf name (nao o path inteiro) pra ser legivel mas curto
+        $leaf = $keyPath -replace '[\\:*?"<>|]', '_'
+        $lastSlash = $leaf.LastIndexOf('_')
+        if ($lastSlash -ge 0 -and $lastSlash -lt $leaf.Length - 1) {
+            $leaf = $leaf.Substring($lastSlash + 1)
+        }
+        # Hash SHA1 dos primeiros 8 chars pra dedup
         $hashInput = [System.Text.Encoding]::UTF8.GetBytes($keyPath)
         $sha = [System.Security.Cryptography.SHA1]::Create()
         $hash = [System.BitConverter]::ToString($sha.ComputeHash($hashInput)).Replace('-', '').Substring(0, 8).ToLower()
         $sha.Dispose()
-        $fname = "{0:D4}_{1}_{2}.reg" -f $i, $safe, $hash
+
+        # Construir fname respeitando o budget
+        $prefix = "{0:D4}_{1}_" -f $i, $hash
+        $suffix = ".reg"
+        $maxLeaf = $reservedForName - $prefix.Length - $suffix.Length
+        if ($maxLeaf -lt 1) { $maxLeaf = 1 }
+        if ($leaf.Length -gt $maxLeaf) { $leaf = $leaf.Substring(0, $maxLeaf) }
+        $fname = "$prefix$leaf$suffix"
         $fullOut = Join-Path $backupDir $fname
 
         # reg.exe export usa formato HKLM\... (sem Registry::)
-        & reg.exe export $keyPath $fullOut /y 2>&1 | Out-Null
+        $regOut = & reg.exe export $keyPath $fullOut /y 2>&1
         if ($LASTEXITCODE -ne 0) {
-            throw "Falha ao exportar '$keyPath' (reg.exe exit $LASTEXITCODE). Backup abortado."
+            $failures.Add("$keyPath -> exit ${LASTEXITCODE}: $regOut") | Out-Null
+            continue
         }
         $manifestLines.Add("$fname  =>  $keyPath") | Out-Null
+    }
+
+    if ($failures.Count -gt 0) {
+        $manifestLines.Add("") | Out-Null
+        $manifestLines.Add("# FALHAS:") | Out-Null
+        foreach ($f in $failures) { $manifestLines.Add("# $f") | Out-Null }
+        $manifestPath = Join-Path $backupDir 'manifest.txt'
+        [System.IO.File]::WriteAllLines($manifestPath, $manifestLines, [System.Text.UTF8Encoding]::new($true))
+        $sample = ($failures | Select-Object -First 3) -join "`n  "
+        throw "Falha em $($failures.Count) export(s). Primeiros 3:`n  $sample"
     }
 
     $manifestPath = Join-Path $backupDir 'manifest.txt'
