@@ -472,22 +472,25 @@ function Export-RegistryBackup {
         $fullOut = Join-Path $backupDir $fname
 
         # reg.exe export usa formato HKLM\... (sem Registry::)
+        # Suprimir ErrorActionPreference: com Stop, stderr capturado via 2>&1 vira
+        # ErrorRecord que lanca excecao terminante antes de checarmos $LASTEXITCODE.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
         $regOut = & reg.exe export $keyPath $fullOut /y 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            if ($LASTEXITCODE -eq 2) {
-                # Chave nao encontrada (sumiu entre scan e backup): skip backup E delete
-                $null = $notFound.Add($keyPath)
-                $manifestLines.Add("# NOT-FOUND (skip): $keyPath") | Out-Null
-            } else {
-                $failures.Add("$keyPath -> exit ${LASTEXITCODE}: $regOut") | Out-Null
-            }
+        $regExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($regExitCode -ne 0) {
+            # reg.exe nao conseguiu exportar: sem backup, sem delete pra essa chave
+            $regMsg = if ($regOut -is [array]) { ($regOut | ForEach-Object { "$_" }) -join ' ' } else { "$regOut" }
+            $null = $notFound.Add($keyPath)
+            $manifestLines.Add("# SKIP (reg-error $regExitCode): $keyPath  msg: $regMsg") | Out-Null
             continue
         }
         $manifestLines.Add("$fname  =>  $keyPath") | Out-Null
     }
 
     if ($notFound.Count -gt 0) {
-        Write-Host "  AVISO: $($notFound.Count) chave(s) nao encontradas pelo reg.exe (sem backup, sem delete)." -ForegroundColor Yellow
+        Write-Host "  AVISO: $($notFound.Count) chave(s) ignoradas pelo reg.exe (sem backup, sem delete). Ver manifest.txt." -ForegroundColor Yellow
     }
 
     if ($failures.Count -gt 0) {
