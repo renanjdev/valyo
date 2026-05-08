@@ -418,7 +418,6 @@ function Find-RegistryMatches {
 }
 
 function Export-RegistryBackup {
-    [OutputType([string])]
     param(
         [Parameter(Mandatory)] [object[]] $Plan,
         [Parameter(Mandatory)] [string] $OutDir,
@@ -432,7 +431,7 @@ function Export-RegistryBackup {
         $null = $keysToBackup.Add($item.Path)
     }
 
-    if ($keysToBackup.Count -eq 0) { return $null }
+    if ($keysToBackup.Count -eq 0) { return [pscustomobject]@{ Dir = $null; SkippedKeys = [System.Collections.Generic.HashSet[string]]::new() } }
 
     $backupDir = Join-Path $OutDir "backup-$Timestamp"
     New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
@@ -447,7 +446,8 @@ function Export-RegistryBackup {
     $reservedForName = [Math]::Max(40, 250 - $backupDir.Length)
 
     $i = 0
-    $failures = New-Object 'System.Collections.Generic.List[string]'
+    $failures   = New-Object 'System.Collections.Generic.List[string]'
+    $notFound   = New-Object 'System.Collections.Generic.HashSet[string]'([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($keyPath in $keysToBackup) {
         $i++
         # Apenas o leaf name (nao o path inteiro) pra ser legivel mas curto
@@ -474,10 +474,20 @@ function Export-RegistryBackup {
         # reg.exe export usa formato HKLM\... (sem Registry::)
         $regOut = & reg.exe export $keyPath $fullOut /y 2>&1
         if ($LASTEXITCODE -ne 0) {
-            $failures.Add("$keyPath -> exit ${LASTEXITCODE}: $regOut") | Out-Null
+            if ($LASTEXITCODE -eq 2) {
+                # Chave nao encontrada (sumiu entre scan e backup): skip backup E delete
+                $null = $notFound.Add($keyPath)
+                $manifestLines.Add("# NOT-FOUND (skip): $keyPath") | Out-Null
+            } else {
+                $failures.Add("$keyPath -> exit ${LASTEXITCODE}: $regOut") | Out-Null
+            }
             continue
         }
         $manifestLines.Add("$fname  =>  $keyPath") | Out-Null
+    }
+
+    if ($notFound.Count -gt 0) {
+        Write-Host "  AVISO: $($notFound.Count) chave(s) nao encontradas pelo reg.exe (sem backup, sem delete)." -ForegroundColor Yellow
     }
 
     if ($failures.Count -gt 0) {
@@ -500,7 +510,7 @@ function Export-RegistryBackup {
         Write-Host "AVISO: backup total $mb MB (> 100MB). Espaco em disco e tempo de import podem ser significativos." -ForegroundColor Yellow
     }
 
-    return $backupDir
+    return [pscustomobject]@{ Dir = $backupDir; SkippedKeys = $notFound }
 }
 
 function Show-ConfirmPrompt {
@@ -817,7 +827,16 @@ function Invoke-MainFlow {
     if ($Apply -and $deleteCount -gt 0) {
         Write-Host "Criando backup..." -ForegroundColor Cyan
         try {
-            $backupDir = Export-RegistryBackup -Plan $plan -OutDir $absOutDir -Timestamp $timestamp
+            $backupResult = Export-RegistryBackup -Plan $plan -OutDir $absOutDir -Timestamp $timestamp
+            $backupDir = $backupResult.Dir
+            # Marcar como skip itens cujas chaves nao foram encontradas pelo reg.exe
+            if ($backupResult.SkippedKeys.Count -gt 0) {
+                foreach ($item in $plan) {
+                    if ($backupResult.SkippedKeys.Contains($item.Path)) {
+                        $item.Action = 'Skip(key-not-found)'
+                    }
+                }
+            }
             Write-Host "Backup: $backupDir" -ForegroundColor Green
         } catch {
             Write-Host "ERRO no backup: $($_.Exception.Message)" -ForegroundColor Red
